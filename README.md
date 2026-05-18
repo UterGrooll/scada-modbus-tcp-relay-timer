@@ -8,9 +8,10 @@ The device receives relay commands over Modbus TCP, runs the relay for a configu
 
 - Modbus TCP slave for SCADA integration.
 - Relay control through Modbus coils.
+- Relay timer enable/disable through a separate Modbus coil.
 - Configurable relay runtime through a holding register.
-- Relay state and remaining timer value exposed through input registers.
-- EEPROM storage for the relay runtime setting.
+- Relay state, timer enable state, and remaining timer value exposed through input registers.
+- EEPROM storage for the relay runtime and timer enable settings.
 - Non-blocking relay timer based on `millis()`.
 - Ethernet link watchdog for W5100/W5500 recovery after cable disconnect/reconnect.
 - Optional hardware reset line for the W5100 Ethernet module.
@@ -56,9 +57,9 @@ Default pin assignment:
 Default firmware network settings:
 
 ```cpp
-byte mac[] = {0x90, 0xA5, 0xDA, 0x0E, 0x94, 0xB5};
-IPAddress ip(192, 168, 1, 178);
-IPAddress gateway(192, 168, 1, 1);
+byte mac[]  = {0x02, 0x47, 0xA1, 0x10, 0x00, 0x04};
+IPAddress ip(192, 168, 0, 178);
+IPAddress gateway(192, 168, 0, 1);
 IPAddress subnet(255, 255, 255, 0);
 ```
 
@@ -75,8 +76,10 @@ Short version:
 | Type | Address | Function | Description |
 | --- | ---: | --- | --- |
 | Coil | `0` | `FC01`, `FC05`, `FC15` | Relay command: `0 = OFF`, `1 = ON` |
+| Coil | `1` | `FC01`, `FC05`, `FC15` | Relay timer enable: `0 = disabled`, `1 = enabled` |
 | Input Register | `0` | `FC04` | Actual relay state: `0 = OFF`, `1 = ON` |
 | Input Register | `1` | `FC04` | Remaining relay time in seconds |
+| Input Register | `2` | `FC04` | Relay timer enabled state: `0 = disabled`, `1 = enabled` |
 | Holding Register | `0` | `FC03`, `FC06`, `FC16` | Relay runtime in seconds |
 
 Default relay runtime: `300` seconds.
@@ -102,11 +105,11 @@ Required libraries:
 
 1. SCADA writes `1` to `Coil 0`.
 2. The Arduino turns the relay on.
-3. The relay timer starts.
+3. If `Coil 1` is ON, the relay timer starts.
 4. SCADA reads the relay state and remaining time from input registers.
-5. When the timer expires, the relay turns off automatically.
+5. When the timer is enabled and expires, the relay turns off automatically.
 6. SCADA can write a new runtime value to `Holding Register 0`.
-7. The new runtime value is saved to EEPROM.
+7. The new runtime value and timer enable state are saved to EEPROM.
 
 ## Modbus Poll Examples
 
@@ -118,12 +121,20 @@ Address: 0
 Value: ON / OFF
 ```
 
+Enable or disable the relay timer:
+
+```text
+Function: 05 Write Single Coil
+Address: 1
+Value: ON / OFF
+```
+
 Read relay state and remaining time:
 
 ```text
 Function: 04 Read Input Registers
 Address: 0
-Quantity: 2
+Quantity: 3
 ```
 
 Read configured relay runtime:

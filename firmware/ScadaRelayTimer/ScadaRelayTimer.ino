@@ -7,9 +7,9 @@ extern EthernetServer MbServer;
 
 ModbusTCP_RU Mb;
 
-byte mac[] = {0x90, 0xA5, 0xDA, 0x0E, 0x94, 0xB5};
-IPAddress ip(192, 168, 1, 178);
-IPAddress gateway(192, 168, 1, 1);
+byte mac[]  = {0x02, 0x47, 0xA1, 0x10, 0x00, 0x04};
+IPAddress ip(192, 168, 0, 178);
+IPAddress gateway(192, 168, 0, 1);
 IPAddress subnet(255, 255, 255, 0);
 
 /* ---------- Pins ---------- */
@@ -18,14 +18,17 @@ IPAddress subnet(255, 255, 255, 0);
 
 /* ---------- Modbus map ---------- */
 const word COIL_RELAY = 0;
+const word COIL_RELAY_TIMER_ENABLE = 1;
 
 const word IREG_RELAY_STATE = 0;
 const word IREG_REMAINING_SEC = 1;
+const word IREG_RELAY_TIMER_ENABLED = 2;
 
 const word HREG_RELAY_TIME_SEC = 0;
 
 /* ---------- EEPROM ---------- */
 const int EEPROM_RELAY_TIME_ADDR = 0;
+const int EEPROM_RELAY_TIMER_ENABLE_ADDR = 2;
 const int EEPROM_MAGIC_ADDR = 10;
 const uint16_t EEPROM_MAGIC = 0xA55A;
 
@@ -36,6 +39,9 @@ const uint16_t MAX_RELAY_TIME_SEC = 3600;
 uint16_t relayTimeSec = DEFAULT_RELAY_TIME_SEC;
 uint16_t lastSavedRelayTimeSec = DEFAULT_RELAY_TIME_SEC;
 bool relayTimeApplying = false;
+bool relayTimerEnabled = true;
+bool lastSavedRelayTimerEnabled = true;
+bool relayTimerEnableApplying = false;
 
 /* ---------- Logic ---------- */
 const unsigned long W5100_RESET_INTERVAL_MS = 420000UL;
@@ -57,11 +63,31 @@ unsigned long relayStartTime = 0;
 unsigned long w5100ResetTime = 0;
 bool isW5100ResetPending = false;
 
-void saveRelayTimeToEEPROM(uint16_t value)
+void writeEEPROMMagic()
 {
   EEPROM.put(EEPROM_MAGIC_ADDR, EEPROM_MAGIC);
+}
+
+void saveRelayTimeToEEPROM(uint16_t value)
+{
+  byte storedTimerEnabled = relayTimerEnabled ? 1 : 0;
+
+  writeEEPROMMagic();
   EEPROM.put(EEPROM_RELAY_TIME_ADDR, value);
+  EEPROM.put(EEPROM_RELAY_TIMER_ENABLE_ADDR, storedTimerEnabled);
   lastSavedRelayTimeSec = value;
+  lastSavedRelayTimerEnabled = relayTimerEnabled;
+}
+
+void saveRelayTimerEnableToEEPROM(bool value)
+{
+  byte storedValue = value ? 1 : 0;
+
+  writeEEPROMMagic();
+  EEPROM.put(EEPROM_RELAY_TIME_ADDR, relayTimeSec);
+  EEPROM.put(EEPROM_RELAY_TIMER_ENABLE_ADDR, storedValue);
+  lastSavedRelayTimeSec = relayTimeSec;
+  lastSavedRelayTimerEnabled = value;
 }
 
 uint16_t loadRelayTimeFromEEPROM()
@@ -81,6 +107,25 @@ uint16_t loadRelayTimeFromEEPROM()
   }
 
   return value;
+}
+
+bool loadRelayTimerEnableFromEEPROM()
+{
+  uint16_t magic = 0;
+  byte value = 1;
+
+  EEPROM.get(EEPROM_MAGIC_ADDR, magic);
+  EEPROM.get(EEPROM_RELAY_TIMER_ENABLE_ADDR, value);
+
+  if (magic != EEPROM_MAGIC) {
+    return true;
+  }
+
+  if (value > 1) {
+    return true;
+  }
+
+  return value == 1;
 }
 
 uint16_t normalizeRelayTime(uint16_t value)
@@ -108,6 +153,27 @@ void setRelayTime(uint16_t value, bool saveToEeprom)
 
   if (saveToEeprom && relayTimeSec != lastSavedRelayTimeSec) {
     saveRelayTimeToEEPROM(relayTimeSec);
+  }
+}
+
+void setRelayTimerEnabled(bool enabled, bool saveToEeprom)
+{
+  relayTimerEnabled = enabled;
+
+  if (!relayTimerEnableApplying) {
+    relayTimerEnableApplying = true;
+    Mb.Coil(COIL_RELAY_TIMER_ENABLE, relayTimerEnabled);
+    relayTimerEnableApplying = false;
+  }
+
+  Mb.Ireg(IREG_RELAY_TIMER_ENABLED, relayTimerEnabled ? 1 : 0);
+
+  if (relayTimerEnabled && relayActive) {
+    relayStartTime = millis();
+  }
+
+  if (saveToEeprom && relayTimerEnabled != lastSavedRelayTimerEnabled) {
+    saveRelayTimerEnableToEEPROM(relayTimerEnabled);
   }
 }
 
@@ -202,6 +268,15 @@ void stopRelay()
 
 void onCoilWrite(word address, bool value)
 {
+  if (address == COIL_RELAY_TIMER_ENABLE) {
+    if (relayTimerEnableApplying) {
+      return;
+    }
+
+    setRelayTimerEnabled(value, true);
+    return;
+  }
+
   if (address != COIL_RELAY) {
     return;
   }
@@ -221,7 +296,7 @@ void onCoilWrite(word address, bool value)
 
 void updateRelayTimer()
 {
-  if (!relayActive) {
+  if (!relayActive || !relayTimerEnabled) {
     Mb.Ireg(IREG_REMAINING_SEC, 0);
     return;
   }
@@ -261,12 +336,17 @@ void setup()
 
   relayTimeSec = loadRelayTimeFromEEPROM();
   lastSavedRelayTimeSec = relayTimeSec;
+  relayTimerEnabled = loadRelayTimerEnableFromEEPROM();
+  lastSavedRelayTimerEnabled = relayTimerEnabled;
 
   Mb.Coil(COIL_RELAY, false);
+  Mb.Coil(COIL_RELAY_TIMER_ENABLE, relayTimerEnabled);
   Mb.Ireg(IREG_RELAY_STATE, 0);
   Mb.Ireg(IREG_REMAINING_SEC, 0);
+  Mb.Ireg(IREG_RELAY_TIMER_ENABLED, relayTimerEnabled ? 1 : 0);
 
   setRelayTime(relayTimeSec, false);
+  setRelayTimerEnabled(relayTimerEnabled, false);
 
   Mb.onCoilWrite(onCoilWrite);
   Mb.onHoldingWrite(onHoldingWrite);

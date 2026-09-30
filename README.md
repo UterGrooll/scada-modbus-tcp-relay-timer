@@ -129,7 +129,7 @@ Address: 1
 Value: ON / OFF
 ```
 
-Read relay state and remaining time:
+Read relay state, remaining time, and timer enable state:
 
 ```text
 Function: 04 Read Input Registers
